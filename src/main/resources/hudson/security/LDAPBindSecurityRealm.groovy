@@ -24,7 +24,7 @@
 import org.acegisecurity.providers.ProviderManager
 import org.acegisecurity.providers.anonymous.AnonymousAuthenticationProvider
 import org.acegisecurity.providers.ldap.authenticator.BindAuthenticator2
-import org.acegisecurity.ldap.DefaultInitialDirContextFactory
+import jenkins.security.plugins.ldap.LDAPDefaultInitialDirContextFactory
 import org.acegisecurity.ldap.search.FilterBasedLdapUserSearch
 import org.acegisecurity.providers.rememberme.RememberMeAuthenticationProvider
 import jenkins.model.Jenkins
@@ -39,7 +39,7 @@ import javax.naming.Context
     The 'instance' object refers to the instance of LDAPSecurityRealm
 */
 
-initialDirContextFactory(DefaultInitialDirContextFactory, instance.getLDAPURL() ) {
+initialDirContextFactory(LDAPDefaultInitialDirContextFactory, instance.getLDAPURL() ) {
   if(instance.managerDN!=null) {
     managerDn = instance.managerDN;
     managerPassword = instance.getManagerPassword();
