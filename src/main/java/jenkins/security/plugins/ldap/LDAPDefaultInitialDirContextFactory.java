@@ -205,6 +205,20 @@ public class LDAPDefaultInitialDirContextFactory extends DefaultInitialDirContex
 	}
 
 	private void reconnect(Hashtable env, String username, String password) throws NamingException, IOException {
+		closeConnections();
+		ctx = new InitialLdapContext(env, null);
+		tlsReq = new StartTlsRequest();
+		StartTlsResponse tlsTemp = null;
+		try {
+			tlsTemp = (StartTlsResponse) ctx.extendedOperation(tlsReq);
+		} catch (Exception ne) {
+			// sallow to reconnect
+		}
+		tls = (tlsTemp != null) ? tlsTemp : tls;
+		reconfigure(username, password);
+	}
+
+	private void closeConnections() {
 		try {
 			if (tls != null) {
 				tls.close();
@@ -218,16 +232,6 @@ public class LDAPDefaultInitialDirContextFactory extends DefaultInitialDirContex
 		} catch (IOException iexp) {
 			logger.error("Error closing tls:" + iexp.getMessage());
 		}
-		ctx = new InitialLdapContext(env, null);
-		tlsReq = new StartTlsRequest();
-		StartTlsResponse tlsTemp = null;
-		try {
-			tlsTemp = (StartTlsResponse) ctx.extendedOperation(tlsReq);
-		} catch (Exception ne) {
-			// sallow to reconnect
-		}
-		tls = (tlsTemp != null) ? tlsTemp : tls;
-		reconfigure(username, password);
 	}
 
 	private void reconfigure(String username, String password) throws IOException, NamingException {
