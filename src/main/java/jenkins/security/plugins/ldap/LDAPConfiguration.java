@@ -65,6 +65,8 @@ import javax.naming.ldap.InitialLdapContext;
 import javax.naming.ldap.LdapContext;
 import javax.naming.ldap.StartTlsRequest;
 import javax.naming.ldap.StartTlsResponse;
+import javax.net.ssl.HostnameVerifier;
+import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLSession;
 
 import java.io.File;
@@ -77,6 +79,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.UnknownHostException;
 import java.security.MessageDigest;
+import java.security.cert.Certificate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -436,6 +439,7 @@ public class LDAPConfiguration extends AbstractDescribableImpl<LDAPConfiguration
 		@SuppressFBWarnings(value = "RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE", justification = "Only on newer core versions")
 		public FormValidation doCheckServer(@QueryParameter String value, @QueryParameter String managerDN,
 				@QueryParameter Secret managerPasswordSecret) {
+
 			final Jenkins jenkins = Jenkins.getInstance();
 			if (jenkins == null) {
 				return FormValidation.error("Jenkins is not ready. Cannot validate the field");
@@ -443,12 +447,12 @@ public class LDAPConfiguration extends AbstractDescribableImpl<LDAPConfiguration
 			if (!jenkins.hasPermission(Jenkins.ADMINISTER))
 				return FormValidation.ok();
 
-			return establishTLSConnection(value, managerDN, managerPasswordSecret);
+			return startTLSConnect(value, managerDN, managerPasswordSecret);
 		}
 
 		// note that this works better in 1.528+ (JENKINS-19124)
 		@SuppressFBWarnings(value = "RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE", justification = "Only on newer core versions")
-		public FormValidation establishConnection(@QueryParameter String value, @QueryParameter String managerDN,
+		public FormValidation defaultReconnect(@QueryParameter String value, @QueryParameter String managerDN,
 				@QueryParameter Secret managerPasswordSecret) {
 			String server = value;
 			String managerPassword = Secret.toString(managerPasswordSecret);
@@ -477,27 +481,22 @@ public class LDAPConfiguration extends AbstractDescribableImpl<LDAPConfiguration
 			}
 		}
 
-		public FormValidation establishTLSConnection(@QueryParameter String value, @QueryParameter String managerDN,
+		public FormValidation startTLSConnect(@QueryParameter String value, @QueryParameter String managerDN,
 				@QueryParameter Secret managerPasswordSecret) {
 			String server = value;
 			String managerPassword = Secret.toString(managerPasswordSecret);
-			System.out.println("establishTLSConnection ...do check serveer:" + server);
 			LdapContext ctx = null;
-
 			try {
-				// try TLS handshake first
 				Hashtable<String, String> props = new Hashtable<String, String>();
 				props.put(Context.INITIAL_CONTEXT_FACTORY, "com.sun.jndi.ldap.LdapCtxFactory");
 				props.put(Context.PROVIDER_URL, LDAPSecurityRealm.toProviderUrl(server, ""));
 				props.put(Context.SECURITY_AUTHENTICATION, "simple");
-
 				ctx = new InitialLdapContext(props, null);
-
-				System.out.println("start tls");
 				StartTlsResponse tls = (StartTlsResponse) ctx.extendedOperation(new StartTlsRequest());
+				//tls.setHostnameVerifier(new CertVerifier());
 				SSLSession session = tls.negotiate();
-				if (session.isValid()) {
-					System.out.println("@@@@@@@@@ session is valid establishTLSConnection");
+				if (!session.isValid()) {
+					throw new IOException("Couldn't negotiate StartTls session, session is invalid");
 				}
 				ctx.addToEnvironment(Context.SECURITY_AUTHENTICATION, "simple");
 				if (managerDN != null && managerDN.trim().length() > 0 && !"undefined".equals(managerDN)) {
@@ -513,35 +512,23 @@ public class LDAPConfiguration extends AbstractDescribableImpl<LDAPConfiguration
 				ctx.reconnect(ctx.getConnectControls());
 				// Stop TLS
 				tls.close();
-				System.out.println("############### establishTLSConnection close tls");
-
 				return FormValidation.ok(); // connected
 			} catch (IOException ioe) {
-				ioe.printStackTrace();
-				System.out.println("################ MAYBE HANDSHAKE ISSUE");
-				return establishConnection(value, managerDN, managerPasswordSecret);
+				if (ioe instanceof SSLPeerUnverifiedException) {
+					return FormValidation.error(Messages.LDAPSecurityRealm_UnableToConnect(server, ioe.getMessage()));
+				}
+				return defaultReconnect(value, managerDN, managerPasswordSecret);
 			} catch (NamingException e) {
-				e.printStackTrace();
-				System.out.println("NAMING EXCEPTION IN DO CHECK###");
-				//establish normal ldap connection in case StartTLS didn't work
-				return establishConnection(value, managerDN, managerPasswordSecret);
+				// establish normal ldap connection in case StartTLS didn't work
+				return defaultReconnect(value, managerDN, managerPasswordSecret);
 			} catch (NumberFormatException x) {
 				// The getLdapCtxInstance method throws this if it fails to parse the port
 				// number
 				return FormValidation.error(Messages.LDAPSecurityRealm_InvalidPortNumber());
-			} finally {
-				if (ctx != null) {
-					try {
-						// LdapUtils.closeContext(ctx);
-					} catch (Exception exp) {
-						exp.printStackTrace();
-					}
-				}
 			}
 		}
 
 		private FormValidation handleNamingException(String server, NamingException e) {
-			System.out.println("PROBLEM...");
 			// trouble-shoot
 			Matcher m = Pattern.compile("(ldaps?://)?([^:]+)(?:\\:(\\d+))?(\\s+(ldaps?://)?([^:]+)(?:\\:(\\d+))?)*")
 					.matcher(server.trim());
@@ -583,8 +570,7 @@ public class LDAPConfiguration extends AbstractDescribableImpl<LDAPConfiguration
 	}
 
 	private String inferRootDN(String server) {
-		System.out.println("inferRootDN  starTLS ###:" + starTLS);
-		return inferRootDNStarTLS(server);
+		return inferRootDNStartTLS(server);
 	}
 
 	/**
@@ -605,9 +591,10 @@ public class LDAPConfiguration extends AbstractDescribableImpl<LDAPConfiguration
 			DirContext ctx = new InitialDirContext(props);
 			Attributes atts = ctx.getAttributes("");
 			Attribute a = atts.get("defaultNamingContext");
-			if (a != null && a.get() != null) // this entry is available on Active Directory. See
+			if (a != null && a.get() != null) { // this entry is available on Active Directory. See
 												// http://msdn2.microsoft.com/en-us/library/ms684291(VS.85).aspx
 				return a.get().toString();
+			}
 
 			a = atts.get("namingcontexts");
 			if (a == null) {
@@ -621,22 +608,20 @@ public class LDAPConfiguration extends AbstractDescribableImpl<LDAPConfiguration
 		}
 	}
 
-	private String inferRootDNStarTLS(String server) {
+	private String inferRootDNStartTLS(String server) {
 		try {
 			Hashtable<String, String> props = new Hashtable<String, String>();
-			System.out.println("################# INFERE ######################");
 			props.put(Context.INITIAL_CONTEXT_FACTORY, "com.sun.jndi.ldap.LdapCtxFactory");
 			props.put(Context.PROVIDER_URL, LDAPSecurityRealm.toProviderUrl(getServerUrl(), ""));
-
 			props.put(Context.SECURITY_AUTHENTICATION, "simple");
 			LdapContext ctx = new InitialLdapContext(props, null);
-			System.out.println("################################ :" + ctx);
 
-			System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!! start tls....inferRootDN");
 			StartTlsResponse tls = (StartTlsResponse) ctx.extendedOperation(new StartTlsRequest());
+			//tls.setHostnameVerifier(new CertVerifier());
+
 			SSLSession session = tls.negotiate();
 			if (session.isValid()) {
-				System.out.println("@@@@@@@@@ ####### session: valid");
+				LOGGER.log(Level.INFO, "session is valid!s");
 			}
 			ctx.addToEnvironment(Context.SECURITY_AUTHENTICATION, "simple");
 
@@ -652,29 +637,21 @@ public class LDAPConfiguration extends AbstractDescribableImpl<LDAPConfiguration
 			Attributes atts = ctx.getAttributes("");
 			Attribute a = atts.get("defaultNamingContext");
 			if (a != null && a.get() != null) {
-				System.out.println(a.get().toString());
 				return a.get().toString();
 			}
-
 			a = atts.get("namingcontexts");
-
 			// Stop TLS
 			tls.close();
-			System.out.println("close tls in infere");
 			if (a == null) {
 				LOGGER.warning("namingcontexts attribute not found in root DSE of " + server);
 				return null;
 			}
-			System.out.println("a.get().toString();:" + a.get().toString());
 			return a.get().toString();
-
 		} catch (IOException ioe) {
-			ioe.printStackTrace();
-			System.out.println("HANDSHAKE IN INFER #####");
+			LOGGER.log(Level.INFO, "1- Failed to connect to LDAP to infer Root DN for " + server, ioe);
 			return inferRootDNDefault(server);
 		} catch (NamingException e) {
 			LOGGER.log(Level.WARNING, "Failed to connect to LDAP to infer Root DN for " + server, e);
-			System.out.println("NAMING HANDSHAKE IN INFER #####");
 			return inferRootDNDefault(server);
 		}
 

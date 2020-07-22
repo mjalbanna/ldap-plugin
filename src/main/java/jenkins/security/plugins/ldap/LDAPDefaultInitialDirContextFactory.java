@@ -46,6 +46,7 @@ public class LDAPDefaultInitialDirContextFactory extends DefaultInitialDirContex
 	StartTlsRequest tlsReq = new StartTlsRequest();
 	StartTlsResponse tls = null;
 	InitialLdapContext ctx = null;
+	SSLSession session = null;
 
 	public StartTlsResponse getTls() {
 		return tls;
@@ -173,29 +174,15 @@ public class LDAPDefaultInitialDirContextFactory extends DefaultInitialDirContex
 		try {
 			String username = (String) env.get(Context.SECURITY_PRINCIPAL);
 			String password = (String) env.get(Context.SECURITY_CREDENTIALS);
-			//env.remove(Context.SECURITY_PRINCIPAL);
-			//env.remove(Context.SECURITY_CREDENTIALS);
-			ctx = new InitialLdapContext(env, null);		
-			try {
-				System.out.println("IN TRY %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%");
-				tlsReq = new StartTlsRequest();
-				tls = (StartTlsResponse) ctx.extendedOperation(tlsReq);
-				SSLSession session = tls.negotiate();
-				if(session.isValid()) {
-			    	System.out.println("@@@@@@@@@ session is valid :"+session);
-			    }
-			} catch (NamingException exp) {
-				System.out.println(" TLS Already STARTED EXCEPTION .....");
-				try {
-					SSLSession sess = tls.negotiate();
-					if(sess.isValid()) {
-						System.out.println("%%%%%%%%%%%%%%%%%%%%% success negotiate");
-				    }
-				} catch (Exception tlse) {
-					System.out.println("TLS ERROR ....." + tlse.getMessage());
+			env.remove(Context.SECURITY_PRINCIPAL);
+			env.remove(Context.SECURITY_CREDENTIALS);
+			if (session != null && ctx != null && session.isValid() && tls != null) {
+				reconnect(env, username, password);
+				if (session.isValid()) {
+					return ctx;
 				}
 			}
-			reEstablishConnection(env, username, password);
+			reconnect(env, username, password);
 			return ctx;
 		} catch (NamingException ne) {
 			if ((ne instanceof javax.naming.AuthenticationException)
@@ -203,40 +190,50 @@ public class LDAPDefaultInitialDirContextFactory extends DefaultInitialDirContex
 				throw new BadCredentialsException(
 						messages.getMessage("DefaultIntitalDirContextFactory.badCredentials", "Bad credentials"), ne);
 			}
-
 			if (ne instanceof CommunicationException) {
 				throw new LdapDataAccessException(
 						messages.getMessage("DefaultIntitalDirContextFactory.communicationFailure",
 								"Unable to connect to LDAP server"),
 						ne);
 			}
-
 			throw new LdapDataAccessException(messages.getMessage("DefaultIntitalDirContextFactory.unexpectedException",
 					"Failed to obtain InitialDirContext due to unexpected exception"), ne);
 		} catch (Exception exp) {
-			System.out.println("$$$$$$$$$$$$$$$$$$$$$$$$$ ERROR EEEEEEEEEEEEEEEEEEEEEEEEE $$$$$$$");
-			exp.printStackTrace();
 			throw new LdapDataAccessException(messages.getMessage("unexpectedException",
 					"Failed to obtain InitialDirContext due to unexpected exception"), exp);
 		}
 	}
 
-	private void reEstablishConnection(Hashtable env, String username, String password)
-			throws NamingException, IOException {
+	private void reconnect(Hashtable env, String username, String password) throws NamingException, IOException {
 		try {
-			ctx.addToEnvironment(Context.SECURITY_AUTHENTICATION, "simple");
-			ctx.reconnect(ctx.getConnectControls());
-			ctx.addToEnvironment(Context.SECURITY_PRINCIPAL, username);
-			ctx.addToEnvironment(Context.SECURITY_CREDENTIALS, password);
-		} catch (ServiceUnavailableException sue) {
-			System.out.println("HANDLING CLOSED SOCKET.....:" + sue.getMessage());
-			ctx = new InitialLdapContext(env, null);
-			tlsReq = new StartTlsRequest();
-			tls = (StartTlsResponse) ctx.extendedOperation(tlsReq);
-			SSLSession session = tls.negotiate();
-			if(session.isValid()) {
-		    	System.out.println("@@@@@@@@@ reEstablishConnection->session is valid !!!!!!!!!!!!!!!!!");
-		    }
+			if (tls != null) {
+				tls.close();
+			}
+			tls = null;
+			if (ctx != null) {
+				ctx.close();
+			}
+		} catch (NamingException nexp) {
+			logger.error("Error closing context:" + nexp.getMessage());
+		} catch (IOException iexp) {
+			logger.error("Error closing tls:" + iexp.getMessage());
+		}
+		ctx = new InitialLdapContext(env, null);
+		tlsReq = new StartTlsRequest();
+		StartTlsResponse tlsTemp = null;
+		try {
+			tlsTemp = (StartTlsResponse) ctx.extendedOperation(tlsReq);
+		} catch (Exception ne) {
+			// sallow to reconnect
+		}
+		tls = (tlsTemp != null) ? tlsTemp : tls;
+		reconfigure(username, password);
+	}
+
+	private void reconfigure(String username, String password) throws IOException, NamingException {
+		if (tls != null) {
+			//tls.setHostnameVerifier(new CertVerifier());
+			session = tls.negotiate();
 			ctx.addToEnvironment(Context.SECURITY_AUTHENTICATION, "simple");
 			ctx.reconnect(ctx.getConnectControls());
 			ctx.addToEnvironment(Context.SECURITY_PRINCIPAL, username);
@@ -352,7 +349,6 @@ public class LDAPDefaultInitialDirContextFactory extends DefaultInitialDirContex
 		Assert.hasLength(managerPassword, "Manager password must not be empty or null.");
 		this.managerPassword = managerPassword;
 	}
-
 
 	/**
 	 * Connection pooling is enabled by default for anonymous or "manager"

@@ -180,7 +180,6 @@ public class LDAPExtendedTemplate extends LdapTemplate {
 		boolean isStarTLS = true;
 		if (isStarTLS) {
 			DirContext ctx = null;
-
 			try {
 				ctx = (principalDn == null) ? dirContextFactory.newInitialDirContext()
 						: dirContextFactory.newInitialDirContext(principalDn, password);
@@ -188,16 +187,7 @@ public class LDAPExtendedTemplate extends LdapTemplate {
 				return callback.doInDirContext(ctx);
 			} catch (NamingException exception) {
 				throw exceptionTranslator.translate("LdapCallback", exception);
-			} finally {
-				StartTlsResponse tls = ((LDAPDefaultInitialDirContextFactory) dirContextFactory).getTls();
-				if (tls != null) {
-					try {
-						System.out.println("Closing TLS......!!!!!!!!!!################");
-						// tls.close();
-					} catch (Exception exp) {
-						System.out.println("close tls in template");
-					}
-				}
+			} finally {		
 				LdapUtils.closeContext(ctx);
 			}
 		}
